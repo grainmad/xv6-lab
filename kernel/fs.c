@@ -34,6 +34,29 @@ readsb(int dev, struct superblock *sb)
 
   bp = bread(dev, 1);
   memmove(sb, bp->data, sizeof(*sb));
+  // uint magic;        // Must be FSMAGIC
+  // uint size;         // Size of file system image (blocks)
+  // uint nblocks;      // Number of data blocks
+  // uint ninodes;      // Number of inodes.
+  // uint nlog;         // Number of log blocks
+  // uint logstart;     // Block number of first log block
+  // uint inodestart;   // Block number of first inode block
+  // uint bmapstart;    // Block number of first free map block
+  printf(">>> fs superblock\n");
+  printf("magic: 0x%x\n", sb->magic);
+  printf("block size: %d Bytes\n", BSIZE);
+  printf("totol blocks: %d\n", sb->size);
+  printf("logs blocks: %d\n", sb->nlog);
+  printf("inodes blocks: %d\tinodes count: %d\tinodes per blocks: %lu\tneed blocks: ceil(%d/%lu)=%lu\n", sb->bmapstart-sb->inodestart, sb->ninodes, IPB, sb->ninodes, IPB, (sb->ninodes+IPB)/IPB);
+  printf("bmaps blocks: %d\t\tmap bits: %d*%d*8=%d\n", (sb->size-sb->nblocks)-sb->bmapstart, (sb->size-sb->nblocks)-sb->bmapstart, BSIZE, ((sb->size-sb->nblocks)-sb->bmapstart)*BSIZE*8);
+  printf("data blocks: %d\n", sb->nblocks);
+  printf("logstart: %d\n", sb->logstart);
+  printf("inodestart: %d\n", sb->inodestart);
+  printf("bmapstart: %d\n", sb->bmapstart);
+  printf(">>> disk layout \n");
+  printf("blocks\t\tboot\t\tsuper\t\tlog\t\tinodes\t\tbmap\t\tdata\n");
+  printf("count\t\t1\t\t1\t\t%d\t\t%d\t\t%d\t\t%d\t\tsum=%d\n", sb->inodestart-sb->logstart, sb->bmapstart-sb->inodestart, (sb->size-sb->nblocks)-sb->bmapstart, sb->nblocks, sb->size);
+  printf("start\t\t0\t\t1\t\t%d\t\t%d\t\t%d\t\t%d\t\tend=%d\n", sb->logstart, sb->inodestart, sb->bmapstart, sb->size-sb->nblocks, sb->size);
   brelse(bp);
 }
 

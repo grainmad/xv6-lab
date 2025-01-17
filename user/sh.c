@@ -308,6 +308,7 @@ gettoken(char **ps, char *es, char **q, char **eq)
   return ret;
 }
 
+// 跳过非空字符，再判断第一个字符是否是toks中的字符
 int
 peek(char **ps, char *es, char *toks)
 {
@@ -325,6 +326,7 @@ struct cmd *parsepipe(char**, char*);
 struct cmd *parseexec(char**, char*);
 struct cmd *nulterminate(struct cmd*);
 
+// line
 struct cmd*
 parsecmd(char *s)
 {
@@ -342,6 +344,8 @@ parsecmd(char *s)
   return cmd;
 }
 
+// line -> pipe OR pipe ; line OR back ; line
+// back -> pipe &
 struct cmd*
 parseline(char **ps, char *es)
 {
@@ -359,6 +363,7 @@ parseline(char **ps, char *es)
   return cmd;
 }
 
+// pipe -> exec OR exec | pipe
 struct cmd*
 parsepipe(char **ps, char *es)
 {
@@ -372,6 +377,8 @@ parsepipe(char **ps, char *es)
   return cmd;
 }
 
+
+// dirs -> exec < infile OR exec > outfile OR exec >> outfile OR dirs
 struct cmd*
 parseredirs(struct cmd *cmd, char **ps, char *es)
 {
@@ -397,6 +404,7 @@ parseredirs(struct cmd *cmd, char **ps, char *es)
   return cmd;
 }
 
+// block -> ( line )
 struct cmd*
 parseblock(char **ps, char *es)
 {
@@ -413,6 +421,7 @@ parseblock(char **ps, char *es)
   return cmd;
 }
 
+// exec -> args OR args dirs OR block
 struct cmd*
 parseexec(char **ps, char *es)
 {
