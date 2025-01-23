@@ -259,8 +259,8 @@ uvmalloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz, int xperm)
 
   if(newsz < oldsz)
     return oldsz;
-
   oldsz = PGROUNDUP(oldsz);
+  printf("[attack debug] uvmalloc oldsz=%lu newsz=%lu\n", oldsz, newsz);
   for(a = oldsz; a < newsz; a += sz){
     sz = PGSIZE;
     mem = kalloc();
@@ -271,6 +271,7 @@ uvmalloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz, int xperm)
 #ifndef LAB_SYSCALL
     memset(mem, 0, sz);
 #endif
+    printf("[attack debug] va %lx ---> pa %lx\n", a, (uint64) mem);
     if(mappages(pagetable, a, sz, (uint64)mem, PTE_R|PTE_U|xperm) != 0){
       kfree(mem);
       uvmdealloc(pagetable, a, oldsz);

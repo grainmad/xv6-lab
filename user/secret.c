@@ -11,10 +11,14 @@ main(int argc, char *argv[])
     printf("Usage: secret the-secret\n");
     exit(1);
   }
+  printf("[attack debug] secret\n");
   char *end = sbrk(PGSIZE*32);
+  printf("[attack debug]  end ptr: %p\n", (void *) end);
   end = end + 9 * PGSIZE;
+  printf("[attack debug] end ptr: %p\n", (void *) end);
   strcpy(end, "my very very very secret pw is:   ");
   strcpy(end+32, argv[1]);
+  printf("[attack debug] end+32 string: %s\n", end);
   exit(0);
 }
 

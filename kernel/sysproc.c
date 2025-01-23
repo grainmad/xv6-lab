@@ -5,6 +5,9 @@
 #include "memlayout.h"
 #include "spinlock.h"
 #include "proc.h"
+#include "syscall.h"
+
+extern char *syscalls_name[];
 
 uint64
 sys_exit(void)
@@ -90,4 +93,22 @@ sys_uptime(void)
   xticks = ticks;
   release(&tickslock);
   return xticks;
+}
+
+uint64
+sys_trace(void)
+{
+  int n;
+  argint(0, &n);
+  printf("trace syscall:\n");
+  for (int i=0; i<COUNT_SYSCALLS; i++) {
+    if (n & (1 << i)) {
+      printf("\tname:%s code:%d\n", syscalls_name[i], i);
+    }
+  }
+  struct proc *p = myproc();
+  acquire(&p->lock);
+  p->tmask = n;
+  release(&p->lock);
+  return 0;
 }
