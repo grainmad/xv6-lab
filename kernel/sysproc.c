@@ -1,3 +1,6 @@
+#ifndef LAB_PGTBL
+#define LAB_PGTBL
+#endif
 #include "types.h"
 #include "riscv.h"
 #include "param.h"

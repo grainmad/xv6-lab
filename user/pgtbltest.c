@@ -14,6 +14,7 @@ void superpg_test();
 int
 main(int argc, char *argv[])
 {
+  // printf("%d\n", ugetpid());
   print_pgtbl();
   ugetpid_test();
   print_kpgtbl();

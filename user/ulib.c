@@ -1,3 +1,6 @@
+#ifndef LAB_PGTBL
+#define LAB_PGTBL
+#endif
 #include "kernel/types.h"
 #include "kernel/stat.h"
 #include "kernel/fcntl.h"

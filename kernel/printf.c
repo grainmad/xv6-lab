@@ -26,7 +26,7 @@ static struct {
 static char digits[] = "0123456789abcdef";
 
 static void
-printint(long long xx, int base, int sign)
+printint(long long xx, int base, int sign, int width, char fill)
 {
   char buf[16];
   int i;
@@ -41,6 +41,9 @@ printint(long long xx, int base, int sign)
   do {
     buf[i++] = digits[x % base];
   } while((x /= base) != 0);
+
+  while(i < width-sign)
+    buf[i++] = fill;
 
   if(sign)
     buf[i++] = '-';
@@ -78,33 +81,47 @@ printf(char *fmt, ...)
       continue;
     }
     i++;
+    
+    // 输出固定宽度number，填充字符fill， 模式 %number:sign
+    int number = 0;
+    char fill = '0';
+    if ('0'<=fmt[i] && fmt[i]<= '9') {
+      while ('0'<=fmt[i] && fmt[i]<= '9') {
+        number = number * 10 + fmt[i] - '0';
+        i++;
+      }
+      i++;
+      fill = fmt[i];
+      i++;
+    }
+
     c0 = fmt[i+0] & 0xff;
     c1 = c2 = 0;
     if(c0) c1 = fmt[i+1] & 0xff;
     if(c1) c2 = fmt[i+2] & 0xff;
     if(c0 == 'd'){
-      printint(va_arg(ap, int), 10, 1);
+      printint(va_arg(ap, int), 10, 1, number, fill);
     } else if(c0 == 'l' && c1 == 'd'){
-      printint(va_arg(ap, uint64), 10, 1);
+      printint(va_arg(ap, uint64), 10, 1, number, fill);
       i += 1;
     } else if(c0 == 'l' && c1 == 'l' && c2 == 'd'){
-      printint(va_arg(ap, uint64), 10, 1);
+      printint(va_arg(ap, uint64), 10, 1, number, fill);
       i += 2;
     } else if(c0 == 'u'){
-      printint(va_arg(ap, int), 10, 0);
+      printint(va_arg(ap, int), 10, 0, number, fill);
     } else if(c0 == 'l' && c1 == 'u'){
-      printint(va_arg(ap, uint64), 10, 0);
+      printint(va_arg(ap, uint64), 10, 0, number, fill);
       i += 1;
     } else if(c0 == 'l' && c1 == 'l' && c2 == 'u'){
-      printint(va_arg(ap, uint64), 10, 0);
+      printint(va_arg(ap, uint64), 10, 0, number, fill);
       i += 2;
     } else if(c0 == 'x'){
-      printint(va_arg(ap, int), 16, 0);
+      printint(va_arg(ap, int), 16, 0, number, fill);
     } else if(c0 == 'l' && c1 == 'x'){
-      printint(va_arg(ap, uint64), 16, 0);
+      printint(va_arg(ap, uint64), 16, 0, number, fill);
       i += 1;
     } else if(c0 == 'l' && c1 == 'l' && c2 == 'x'){
-      printint(va_arg(ap, uint64), 16, 0);
+      printint(va_arg(ap, uint64), 16, 0, number, fill);
       i += 2;
     } else if(c0 == 'p'){
       printptr(va_arg(ap, uint64));

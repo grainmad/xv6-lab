@@ -1,3 +1,6 @@
+#ifndef LAB_PGTBL
+#define LAB_PGTBL
+#endif
 // Physical memory layout
 
 // qemu -machine virt is set up like this,
@@ -41,8 +44,8 @@
 // for use by the kernel and user pages
 // from physical address 0x80000000 to PHYSTOP.
 #define KERNBASE 0x80000000L
-#define PHYSTOP (KERNBASE + 128*1024*1024)
-
+#define PHYSTOP (KERNBASE + 256*1024*1024)
+#define PHYSUPER (KERNBASE + 64*1024*1024)
 // map the trampoline page to the highest address,
 // in both user and kernel space.
 #define TRAMPOLINE (MAXVA - PGSIZE)
@@ -64,8 +67,9 @@
 #define TRAPFRAME (TRAMPOLINE - PGSIZE)
 #ifdef LAB_PGTBL
 #define USYSCALL (TRAPFRAME - PGSIZE)
-
+#ifndef __ASSEMBLER__
 struct usyscall {
   int pid;  // Process ID
 };
+#endif
 #endif

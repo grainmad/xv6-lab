@@ -1,3 +1,6 @@
+#ifndef LAB_PGTBL
+#define LAB_PGTBL
+#endif
 #include "types.h"
 #include "param.h"
 #include "memlayout.h"
@@ -111,6 +114,7 @@ extern uint64 sys_recv(void);
 #ifdef LAB_PGTBL
 extern uint64 sys_pgpte(void);
 extern uint64 sys_kpgtbl(void);
+extern uint64 sys_ugetpid(void);
 #endif
 
 // An array mapping syscall numbers from syscall.h
