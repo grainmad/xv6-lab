@@ -79,6 +79,45 @@ struct trapframe {
   /* 280 */ uint64 t6;
 };
 
+
+/*
+sigalarm(uint64 interval, uint64 handler);
+interval为0或handler不为0：
+  1. 设置alarm结构体的interval为interval
+  2. 设置alarm结构体的handler为handler
+  3. 设置alarm结构体的triger_time为当前时间加interval
+  4. 设置alarm结构体的valid为1
+  5. 设置alarm结构体的executing为0
+  6. 设置alarm结构体的tf为当前进程的trapframe
+  7. 返回0
+interval为0且handler为0：
+  1. 设置alarm结构体的valid为0
+  2. 返回0
+
+时钟中断处理函数：
+  1. 获取当前进程
+  2. 如果当前进程的alarm结构体的valid为0，返回
+  3. 如果当前时间大于等于当前进程的alarm结构体的triger_time：
+    1. 如果当前进程的alarm结构体的executing为0：
+      1. 设置当前进程的alarm结构体的executing为1
+      2. 保存当前进程的trapframe
+      3. 设置当前进程的trapframe为当前进程的alarm结构体的tf
+      4. 调用当前进程的alarm结构体的handler
+      5. 恢复当前进程的trapframe
+      6. 设置当前进程的alarm结构体的executing为0
+      7. 设置当前进程的alarm结构体的triger_time为当前时间加interval
+    2. 如果当前进程的alarm结构体的executing为1，返回
+*/
+struct alarm {
+  uint valid;
+  uint executing;
+  uint interval;
+  uint triger_time; 
+  uint64 handler;
+  struct trapframe *tf;
+};
+
+
 enum procstate { UNUSED, USED, SLEEPING, RUNNABLE, RUNNING, ZOMBIE };
 
 // Per-process state
@@ -104,4 +143,5 @@ struct proc {
   struct file *ofile[NOFILE];  // Open files
   struct inode *cwd;           // Current directory
   char name[16];               // Process name (debugging)
+  struct alarm alarm;
 };

@@ -1,0 +1,82 @@
+backtrace 实验
+
+Stack
+                   .
+                   .
+      +->          .
+      |   +-----------------+   |
+      |   | return address  |   |
+      |   |   previous fp ------+
+      |   | saved registers |
+      |   | local variables |
+      |   |       ...       | <-+
+      |   +-----------------+   |
+      |   | return address  |   |
+      +------ previous fp   |   |
+          | saved registers |   |
+          | local variables |   |
+      +-> |       ...       |   |
+      |   +-----------------+   |
+      |   | return address  |   |
+      |   |   previous fp ------+
+      |   | saved registers |
+      |   | local variables |
+      |   |       ...       | <-+
+      |   +-----------------+   |
+      |   | return address  |   |
+      +------ previous fp   |   |
+          | saved registers |   |
+          | local variables |   |
+  $fp --> |       ...       |   |
+          +-----------------+   |
+          | return address  |   |
+          |   previous fp ------+
+          | saved registers |
+  $sp --> | local variables |
+          +-----------------+
+
+fp-8 可以得到当前函数返回地址的指针， *(uint64 *)(fp - 8)就是返回地址值。
+fp - 16 指向了调用者函数的帧指针，
+由于栈的地址都在同一物理页，所以在不断回溯fp时，fp在下取整对齐4k可以得到页号，如果不是统一页则停止回溯。
+``` c
+void
+backtrace(void) {
+  printf("backtrace:\n");
+  uint64 fp = r_fp();
+  uint64 ed = PGROUNDDOWN(fp);
+  while (ed == PGROUNDDOWN(fp)) {
+    uint64 ra = *(uint64 *)(fp - 8);
+    fp = *(uint64 *)(fp - 16);
+    printf("%p\n", (void*) ra);
+  }
+}
+```
+
+alarm 实验
+
+通过sigalarm(interval, handler) 系统调用可以使得cpu在每经过interval个周期后，执行一次handler函数。
+
+handler是用户态代码的函数，我们在调用完sigalarm后需要在内核为当前进程维护一个数据结构。
+
+struct alarm {
+  uint valid;
+  uint executing;
+  uint interval;
+  uint triger_time; 
+  uint64 handler;
+  struct trapframe *tf;
+};
+
+然后在时钟中断时，
+1. 判读当前进程是否设置了handler，由于sigalarm(0,0)可以取消设置的handler定时任务。字段valid判读是否设置定时任务。
+2. 判断当前是否已经在执行handler任务，如果handler函数执行时间超过了interval，那么必定在执行期间也会触发中断。字段executing判断是否在执行。
+3. 判断当前是否已经达到触发的时间，字段triger_time触发的时间。
+   如果当前时间ticks大于等于它，那么当前内核态返回到用户态时，就需要从用户态的handler地址开始执行。需要将epc设置为handler。
+   此外需要更新下一次触发时间triger_time = triger_time + interval
+4. 时钟中断对于用户态程序来说是在无形之中完成的，用户态程序遭遇中断，先将用户态程序运行状态保存，待内核处理后，恢复用户态程序运行状态回到用户态继续运行。
+   我们的handler函数执行后，用户态程序还是需要回到handler之前，但是，handler本身就是在用户态的函数，所以在handler函数结束时需要再次进入内核，并将运行状态恢复到时钟中断前。
+   所以在返回用户态执行handler函数前，需要将当前进程的trapframe保存，由于每个进程trapframe用了一页物理内存，存储寄存器状态绰绰有余，估计不会超过半页，我直接将这一页的前半页复制到后半页。（如果我用动态分配的内存，那么fork子进程又需要处理更多细节）
+
+在handler结束时，再次进入内核使用的sigreturn系统调用。直接将trapframe的后半页复制到前半页即可，但是a0寄存器是系统调用的返回值，为了不破坏a0在时钟中断前的状态，sigreturn返回了trapframe后半页中的a0值。
+
+另外在内核中也会遭遇中断，比如系统调用时是开启了中断的。

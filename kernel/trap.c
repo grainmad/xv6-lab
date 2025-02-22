@@ -76,6 +76,24 @@ usertrap(void)
   if(killed(p))
     exit(-1);
 
+
+  if (which_dev == 2) {
+    uint xticks;
+    acquire(&tickslock);
+    xticks = ticks;
+    release(&tickslock);
+    
+    acquire(&p->lock);
+    if (p->alarm.valid == 1 && p->alarm.executing == 0 && p->alarm.triger_time <= xticks) {
+      // 保存原有的trapframe 在sigreturn时还原
+      *(p->alarm.tf) = *(p->trapframe);
+      p->alarm.executing = 1; // 执行间遇到中断，不做处理
+      p->alarm.triger_time += p->alarm.interval;
+      p->trapframe->epc = (uint64)p->alarm.handler;
+    }
+    release(&p->lock);
+  }
+
   // give up the CPU if this is a timer interrupt.
   if(which_dev == 2)
     yield();
@@ -148,6 +166,23 @@ kerneltrap()
     // interrupt or trap from an unknown source
     printf("scause=0x%lx sepc=0x%lx stval=0x%lx\n", scause, r_sepc(), r_stval());
     panic("kerneltrap");
+  }
+
+  if (which_dev == 2 && myproc() != 0) {
+    uint xticks;
+    acquire(&tickslock);
+    xticks = ticks;
+    release(&tickslock);
+    struct proc *p = myproc();
+    acquire(&p->lock);
+    if (p->alarm.valid == 1 && p->alarm.executing == 0 && p->alarm.triger_time <= xticks) {
+      // 保存原有的trapframe 在sigreturn时还原
+      *(p->alarm.tf) = *(p->trapframe);
+      p->alarm.executing = 1; // 执行间遇到中断，不做处理
+      p->alarm.triger_time += p->alarm.interval;
+      p->trapframe->epc = (uint64)p->alarm.handler;
+    }
+    release(&p->lock);
   }
 
   // give up the CPU if this is a timer interrupt.
