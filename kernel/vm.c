@@ -21,7 +21,7 @@ kvmmake(void)
 {
   pagetable_t kpgtbl;
 
-  kpgtbl = (pagetable_t) kalloc();
+  kpgtbl = (pagetable_t) kalloc(0);
   memset(kpgtbl, 0, PGSIZE);
 
   // uart registers
@@ -93,7 +93,7 @@ walk(pagetable_t pagetable, uint64 va, int alloc)
     if(*pte & PTE_V) {
       pagetable = (pagetable_t)PTE2PA(*pte);
     } else {
-      if(!alloc || (pagetable = (pde_t*)kalloc()) == 0)
+      if(!alloc || (pagetable = (pde_t*)kalloc(0)) == 0)
         return 0;
       memset(pagetable, 0, PGSIZE);
       *pte = PA2PTE(pagetable) | PTE_V;
@@ -204,7 +204,7 @@ pagetable_t
 uvmcreate()
 {
   pagetable_t pagetable;
-  pagetable = (pagetable_t) kalloc();
+  pagetable = (pagetable_t) kalloc(0);
   if(pagetable == 0)
     return 0;
   memset(pagetable, 0, PGSIZE);
@@ -221,7 +221,7 @@ uvmfirst(pagetable_t pagetable, uchar *src, uint sz)
 
   if(sz >= PGSIZE)
     panic("uvmfirst: more than a page");
-  mem = kalloc();
+  mem = kalloc(0);
   memset(mem, 0, PGSIZE);
   mappages(pagetable, 0, PGSIZE, (uint64)mem, PTE_W|PTE_R|PTE_X|PTE_U);
   memmove(mem, src, sz);
@@ -232,6 +232,7 @@ uvmfirst(pagetable_t pagetable, uchar *src, uint sz)
 uint64
 uvmalloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz, int xperm)
 {
+  // printf("uvmalloc: oldsz=%p, newsz=%p\n", (void*) oldsz, (void*) newsz);
   char *mem;
   uint64 a;
 
@@ -240,7 +241,7 @@ uvmalloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz, int xperm)
 
   oldsz = PGROUNDUP(oldsz);
   for(a = oldsz; a < newsz; a += PGSIZE){
-    mem = kalloc();
+    mem = kalloc(0);
     if(mem == 0){
       uvmdealloc(pagetable, a, oldsz);
       return 0;
@@ -252,6 +253,7 @@ uvmalloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz, int xperm)
       return 0;
     }
   }
+  // page_info();
   return newsz;
 }
 
@@ -262,6 +264,7 @@ uvmalloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz, int xperm)
 uint64
 uvmdealloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz)
 {
+  // printf("uvmdealloc: oldsz=%p, newsz=%p\n", (void*) oldsz, (void*) newsz);
   if(newsz >= oldsz)
     return oldsz;
 
@@ -269,7 +272,7 @@ uvmdealloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz)
     int npages = (PGROUNDUP(oldsz) - PGROUNDUP(newsz)) / PGSIZE;
     uvmunmap(pagetable, PGROUNDUP(newsz), npages, 1);
   }
-
+  // page_info();
   return newsz;
 }
 
@@ -314,7 +317,6 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
 {
   pte_t *pte;
   uint64 pa, i;
-  uint flags;
   char *mem;
 
   for(i = 0; i < sz; i += PGSIZE){
@@ -322,16 +324,22 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
       panic("uvmcopy: pte should exist");
     if((*pte & PTE_V) == 0)
       panic("uvmcopy: page not present");
+    // 原有的页可写，则标记为COW，并去除W标志以便写时触发缺页
+    if (*pte & PTE_W) {
+      *pte ^= PTE_W;
+      *pte |= PTE_COW;
+    }
+    
     pa = PTE2PA(*pte);
-    flags = PTE_FLAGS(*pte);
-    if((mem = kalloc()) == 0)
+    if((mem = kalloc(pa)) == 0) // pa ref++, mem == pa
       goto err;
-    memmove(mem, (char*)pa, PGSIZE);
-    if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
+    // memmove(mem, (char*)pa, PGSIZE);
+    if(mappages(new, i, PGSIZE, (uint64)mem, PTE_FLAGS(*pte)) != 0){
       kfree(mem);
       goto err;
     }
   }
+  // page_info();
   return 0;
 
  err:
@@ -365,9 +373,21 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
     va0 = PGROUNDDOWN(dstva);
     if(va0 >= MAXVA)
       return -1;
-    pte = walk(pagetable, va0, 0);
-    if(pte == 0 || (*pte & PTE_V) == 0 || (*pte & PTE_U) == 0 ||
-       (*pte & PTE_W) == 0)
+    if ((pte = walk(pagetable, va0, 0)) == 0) { // 未映射
+      return -1;
+    }
+    // 如果是COW，将本页表项替换为新的一页npa，将pa部分内容复制到npa，最后pa引用减少
+    if (*pte&PTE_COW) { //存在COW
+      uint64 pa = PTE2PA(*pte); // 旧物理地址
+      uint64 npa = (uint64) kalloc(0); // 新生成一页
+      int flags = (PTE_FLAGS(*pte)^PTE_COW)|PTE_W; // 新映射物理地址的权限带上PTE_W，移除PTE_COW
+      memmove((void*)npa, (void*)pa, PGSIZE); // 旧页复制到新页
+      *pte = PA2PTE(npa) | flags; // 叶子目录项修改，实现重新映射
+      // 释放旧页：引用减少，如果为0则释放。
+      kfree((void*)pa);
+    }
+    
+    if((*pte & PTE_V) == 0 || (*pte & PTE_U) == 0 || (*pte & PTE_W) == 0)
       return -1;
     pa0 = PTE2PA(*pte);
     n = PGSIZE - (dstva - va0);

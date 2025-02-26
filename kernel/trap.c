@@ -67,6 +67,28 @@ usertrap(void)
     syscall();
   } else if((which_dev = devintr()) != 0){
     // ok
+  } else if (r_scause() == 15) {
+    // printf("usertrap(): scause 0x%lx pid=%d\n", r_scause(), p->pid);
+    // printf("            sepc=0x%lx stval=0x%lx\n", r_sepc(), r_stval());
+    uint64 va = r_stval();
+    pte_t* pte;
+    
+    if (va >= MAXVA) {
+      setkilled(p);
+    } else if ((pte = walk(p->pagetable, va, 0)) == 0){ // 没有映射
+      setkilled(p); 
+    } else if (*pte&PTE_COW) { //存在COW
+      uint64 pa = PTE2PA(*pte); // 旧物理地址
+      uint64 npa = (uint64) kalloc(0); // 新生成一页
+      int flags = (PTE_FLAGS(*pte)^PTE_COW)|PTE_W; // 新映射物理地址的权限，带上PTE_W，移除PTE_COW
+      memmove((void*)npa, (void*)pa, PGSIZE); // 旧页复制到新页
+      *pte = PA2PTE(npa) | flags; // 叶子目录项修改，实现重新映射
+      // 释放旧页：引用减少，如果为0则释放。
+      kfree((void*)pa);
+      // printf("usertrap(): page alloc va=%p npa=%p nflags=%x pid=%d\n", (void*) va, (void*) npa, flags, p->pid);
+    } else { // 原本不可写
+      setkilled(p);
+    }
   } else {
     printf("usertrap(): unexpected scause 0x%lx pid=%d\n", r_scause(), p->pid);
     printf("            sepc=0x%lx stval=0x%lx\n", r_sepc(), r_stval());
