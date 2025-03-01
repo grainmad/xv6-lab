@@ -382,9 +382,9 @@ iunlockput(struct inode *ip)
 static uint
 bmap(struct inode *ip, uint bn)
 {
-  uint addr, *a;
-  struct buf *bp;
-
+  uint addr, *a, *a1;
+  struct buf *bp, *bp1;
+  
   if(bn < NDIRECT){
     if((addr = ip->addrs[bn]) == 0){
       addr = balloc(ip->dev);
@@ -416,6 +416,39 @@ bmap(struct inode *ip, uint bn)
     brelse(bp);
     return addr;
   }
+  bn -= NINDIRECT;
+
+  if(bn < NDINDIRECT){
+    uint d1 = bn/NINDIRECT, d2 = bn%NINDIRECT;
+
+    if((addr = ip->addrs[NDIRECT+1]) == 0){
+      addr = balloc(ip->dev);
+      if(addr == 0)
+        return 0;
+      ip->addrs[NDIRECT+1] = addr;
+    }
+    bp = bread(ip->dev, addr);
+    a = (uint*)bp->data;
+    if((addr = a[d1]) == 0){
+      addr = balloc(ip->dev);
+      if(addr){
+        a[d1] = addr;
+        log_write(bp);
+      }
+    }
+    bp1 = bread(ip->dev, addr);
+    a1 = (uint*)bp1->data;
+    if ((addr = a1[d2]) == 0) {
+      addr = balloc(ip->dev);
+      if (addr) {
+        a1[d2] = addr;
+        log_write(bp1);
+      }
+    }
+    brelse(bp1);
+    brelse(bp);
+    return addr;
+  }
 
   panic("bmap: out of range");
 }
@@ -426,9 +459,9 @@ void
 itrunc(struct inode *ip)
 {
   int i, j;
-  struct buf *bp;
-  uint *a;
-
+  struct buf *bp, *bp1;
+  uint *a, *a1;
+  
   for(i = 0; i < NDIRECT; i++){
     if(ip->addrs[i]){
       bfree(ip->dev, ip->addrs[i]);
@@ -446,6 +479,25 @@ itrunc(struct inode *ip)
     brelse(bp);
     bfree(ip->dev, ip->addrs[NDIRECT]);
     ip->addrs[NDIRECT] = 0;
+  }
+  
+  if(ip->addrs[NDIRECT+1]){
+    bp = bread(ip->dev, ip->addrs[NDIRECT+1]);
+    a = (uint*)bp->data;
+    for(j = 0; j < NINDIRECT; j++) {
+      if(a[j]) {
+        bp1 = bread(ip->dev, a[j]);
+        a1 = (uint*)bp1->data;
+        for (i = 0; i < NINDIRECT; i++) {
+          if (a1[i]) bfree(ip->dev, a1[i]);
+        }
+        brelse(bp1);
+        bfree(ip->dev, a[j]);
+      }
+    }
+    brelse(bp);
+    bfree(ip->dev, ip->addrs[NDIRECT+1]);
+    ip->addrs[NDIRECT+1] = 0;
   }
 
   ip->size = 0;
@@ -649,13 +701,15 @@ skipelem(char *path, char *name)
 // path element into name, which must have room for DIRSIZ bytes.
 // Must be called inside a transaction since it calls iput().
 static struct inode*
-namex(char *path, int nameiparent, char *name)
+namex(char *path, int nameiparent, char *name, struct inode* ci)
 {
   struct inode *ip, *next;
 
   if(*path == '/')
     ip = iget(ROOTDEV, ROOTINO);
-  else
+  else if (ci) 
+    ip = idup(ci);
+  else 
     ip = idup(myproc()->cwd);
 
   while((path = skipelem(path, name)) != 0){
@@ -684,14 +738,53 @@ namex(char *path, int nameiparent, char *name)
 }
 
 struct inode*
-namei(char *path)
+namei(char *path, struct inode* ci)
 {
   char name[DIRSIZ];
-  return namex(path, 0, name);
+  return namex(path, 0, name, ci);
 }
 
+
 struct inode*
-nameiparent(char *path, char *name)
+nameiparent(char *path, char *name, struct inode* ci)
 {
-  return namex(path, 1, name);
+  return namex(path, 1, name, ci);
+}
+
+
+// 传入lock的ip，找到并返回ip的链接目标(也是lock的），目标前的经过的inode全部put 
+struct inode* 
+ifollow(struct inode *ip) {
+  // printf("ifollow ip->inum=%d\n", ip->inum);
+  struct inode *next;
+  
+  char path[MAXPATH];
+  int i;
+  for (i=0; i<MAX_SLINK_DEEP; i++) {
+    // ip 已经锁了
+    memset(path, 0, MAXPATH);
+    readi(ip, 0, (uint64)path, 0, MAXPATH);
+    // printf("ip->inum=%d link=%s\n", ip->inum, path);
+    if (path[0] == '\0') {
+      iunlockput(ip);
+      return 0;
+    }
+    iunlock(ip); //解锁
+    next = namei(path, ip);
+    iput(ip); // 放下ip的引用
+    if (next == 0) return 0;
+    ilock(next); // 只有锁了才能读到内容
+    // printf("next->inum=%d, next->type=%d\n", next->inum, next->type);
+    if (next->type != T_SYMLINK) break;
+    ip = next;
+  }
+  if (i == MAX_SLINK_DEEP) { // ip解锁释放引用
+    iunlockput(ip);
+    return 0;
+  }
+  if (next->nlink == 0) {
+    iunlockput(next);
+    return 0;
+  }
+  return next;
 }

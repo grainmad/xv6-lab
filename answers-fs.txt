@@ -1,0 +1,126 @@
+实现大文件的存储
+
+xv6通过盘块号在磁盘上得到对应的盘块。一个盘块占用1024字节。
+
+在当前的xv6系统中inode有13个存储盘块号的域。这些盘块号占用4字节
+其中12个是直接盘块号，对于小于12*1024字节的文件的读写会依次使用这些直接盘块
+其中有一个间接盘块号，通过间接盘块号可以得到一个盘块，盘块内存储了最多1024/4=256个盘块号，这256个盘块将用于存储数据。
+所以当前可以存储的最大文件是1024*(12+256)字节。
+
+现在我们的任务是牺牲一个直接盘块，作为二级间接盘块，可存储256*256个盘块号。实现更大文件的存储。
+
+
+新增一个inode的盘块域
+``` c
+struct dinode {
+  short type;           // File type
+  short major;          // Major device number (T_DEVICE only)
+  short minor;          // Minor device number (T_DEVICE only)
+  short nlink;          // Number of links to inode in file system
+  uint size;            // Size of file (bytes)
+  uint addrs[NDIRECT+2];   // Data block addresses
+};
+```
+
+修改直接盘块数，一级间接盘块数，二级间接盘块数的宏定义
+``` c
+#define NDIRECT 11
+#define NINDIRECT (BSIZE / sizeof(uint))
+#define NDINDIRECT (NINDIRECT * NINDIRECT)
+```
+
+我们发现读写inode的函数都调用了`uint bmap(struct inode *ip, uint bn)`。寻找当前inode中的第bn个盘块的盘块号。
+修改主要是添加二级间接盘块的处理。
+``` c
+static uint
+bmap(struct inode *ip, uint bn)
+{
+  uint addr, *a, *a1;
+  struct buf *bp, *bp1;
+  
+  if(bn < NDIRECT){
+    if((addr = ip->addrs[bn]) == 0){
+      addr = balloc(ip->dev);
+      if(addr == 0)
+        return 0;
+      ip->addrs[bn] = addr;
+    }
+    return addr;
+  }
+  bn -= NDIRECT;
+
+  if(bn < NINDIRECT){
+    // Load indirect block, allocating if necessary.
+    if((addr = ip->addrs[NDIRECT]) == 0){
+      addr = balloc(ip->dev);
+      if(addr == 0)
+        return 0;
+      ip->addrs[NDIRECT] = addr;
+    }
+    bp = bread(ip->dev, addr);
+    a = (uint*)bp->data;
+    if((addr = a[bn]) == 0){
+      addr = balloc(ip->dev);
+      if(addr){
+        a[bn] = addr;
+        log_write(bp);
+      }
+    }
+    brelse(bp);
+    return addr;
+  }
+  bn -= NINDIRECT;
+
+  if(bn < NDINDIRECT){
+    uint d1 = bn/NINDIRECT, d2 = bn%NINDIRECT;
+
+    if((addr = ip->addrs[NDIRECT+1]) == 0){
+      addr = balloc(ip->dev);
+      if(addr == 0)
+        return 0;
+      ip->addrs[NDIRECT+1] = addr;
+    }
+    bp = bread(ip->dev, addr);
+    a = (uint*)bp->data;
+    if((addr = a[d1]) == 0){
+      addr = balloc(ip->dev);
+      if(addr){
+        a[d1] = addr;
+        log_write(bp);
+      }
+    }
+    bp1 = bread(ip->dev, addr);
+    a1 = (uint*)bp1->data;
+    if ((addr = a1[d2]) == 0) {
+      addr = balloc(ip->dev);
+      if (addr) {
+        a1[d2] = addr;
+        log_write(bp1);
+      }
+    }
+    brelse(bp1);
+    brelse(bp);
+    return addr;
+  }
+
+  panic("bmap: out of range");
+}
+```
+
+软链接的实现  
+
+原本的思路存在错误，我在inode中将类型设置为软链接类型T_SYMLINK，然后用原本存盘块的一个域去存储链接的inode的inum。
+对于读写软链接，如果链接的inode是软链接则继续链接到新的节点，为了防止环出现或链接过深。设置了最大链接深度。
+但是实际上并非如此，软链接是可以悬挂的指向一个不存在的路径，当这个路径创建后将会生效。
+
+于是我们只能将链接的路径，存储的到软链接的inode中。
+具体做法如下：
+对于链接old路径到new路径。
+先找到new路径中父目录的inode指针dp，同时获取new路径中的要创建的软链接名称name。
+创建一个新inode，其指针为ip，写入old路径字符串，然后在dp目录节点中加入(name, ip->inum)目录项
+
+期间错误处理比较麻烦，比如在创建inode后写入失败，或链接失败都需要销毁这个indoe。
+另外indoe必须要上锁才能读取到最新内容。
+
+对于打开软链接，实际上打开的是链接到的文件，通过路径寻找inode的过程中，如果存储的是相对路径，那么就要以当前软链接文件所在目录为起点，绝对路径就以根目录为起点
+

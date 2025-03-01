@@ -130,7 +130,7 @@ sys_link(void)
     return -1;
 
   begin_op();
-  if((ip = namei(old)) == 0){
+  if((ip = namei(old, 0)) == 0){
     end_op();
     return -1;
   }
@@ -146,7 +146,7 @@ sys_link(void)
   iupdate(ip);
   iunlock(ip);
 
-  if((dp = nameiparent(new, name)) == 0)
+  if((dp = nameiparent(new, name, 0)) == 0)
     goto bad;
   ilock(dp);
   if(dp->dev != ip->dev || dirlink(dp, name, ip->inum) < 0){
@@ -197,7 +197,7 @@ sys_unlink(void)
     return -1;
 
   begin_op();
-  if((dp = nameiparent(path, name)) == 0){
+  if((dp = nameiparent(path, name, 0)) == 0){
     end_op();
     return -1;
   }
@@ -248,7 +248,7 @@ create(char *path, short type, short major, short minor)
   struct inode *ip, *dp;
   char name[DIRSIZ];
 
-  if((dp = nameiparent(path, name)) == 0)
+  if((dp = nameiparent(path, name, 0)) == 0)
     return 0;
 
   ilock(dp);
@@ -322,12 +322,20 @@ sys_open(void)
       end_op();
       return -1;
     }
+    // printf("sys_open create ip->num=%d\n", ip->inum);
   } else {
-    if((ip = namei(path)) == 0){
+    if((ip = namei(path, 0)) == 0){
       end_op();
       return -1;
     }
     ilock(ip);
+    if (ip->type == T_SYMLINK && (omode & O_NOFOLLOW) == 0) { // 找到链接的目标
+      if ((ip = ifollow(ip)) == 0) { // ip进入是锁住的，出来也是锁住的，只是不是同一个ip了
+        end_op();
+        return -1;
+      }
+      // printf("sys_open ifollow ip->num=%d\n", ip->inum);
+    }
     if(ip->type == T_DIR && omode != O_RDONLY){
       iunlockput(ip);
       end_op();
@@ -414,7 +422,7 @@ sys_chdir(void)
   struct proc *p = myproc();
   
   begin_op();
-  if(argstr(0, path, MAXPATH) < 0 || (ip = namei(path)) == 0){
+  if(argstr(0, path, MAXPATH) < 0 || (ip = namei(path, 0)) == 0){
     end_op();
     return -1;
   }
@@ -502,4 +510,77 @@ sys_pipe(void)
     return -1;
   }
   return 0;
+}
+
+uint64
+sys_symlink(void)
+{
+  char name[MAXPATH], new[MAXPATH], old[MAXPATH];
+  struct inode *ip, *dp;
+  
+  if(argstr(0, old, MAXPATH) < 0 || argstr(1, new, MAXPATH) < 0)
+  return -1;
+  
+  /*
+    new是一个路径，old是一个路径，new末端是一个symlink，指向old的路径
+
+    找到new的父目录dp，末端的名字name，如果无法找到dp，返回-1
+    查看dp中是否已经存在name的文件，如果存在，返回-1
+    新建一个inode ip，类型为symlink，设置硬链接数为1, 写入old的路径
+    在dp的目录中加入文件name，指向ip->inum，失败 需要删除ip
+  */
+  
+  begin_op();
+  
+  if((dp = nameiparent(new, name, 0)) == 0) {
+    end_op();
+    return -1;
+  }
+
+  if((ip = dirlookup(dp, name, 0)) != 0){
+    iput(ip);
+    iput(dp);
+    end_op();
+    return -1;
+  }
+
+  if((ip = ialloc(dp->dev, T_SYMLINK)) == 0){
+    iput(dp);
+    end_op();
+    return -1;
+  }
+
+  ilock(ip);
+  ip->major = 0;
+  ip->minor = 0;
+  ip->nlink = 1;
+  iupdate(ip);
+
+  // 在这个inode上写入old路径
+  if (writei(ip, 0, (uint64)old, 0, strlen(old)) != strlen(old)) {
+    iput(dp);
+    goto bad; // ip已锁
+  }
+  
+  
+  // 链接
+  // printf("symlink old=%s new=%s\n", old, new);
+  // printf("symlink dp->inum=%d dp->type=%d, ip->inum=%d ip->type=%d\n", dp->inum, dp->type, ip->inum, ip->type);
+  ilock(dp);
+  if(dp->dev != ip->dev || dirlink(dp, name, ip->inum) < 0){
+    iunlockput(dp);
+    goto bad;
+  }
+
+  iunlockput(ip);
+  iunlockput(dp);
+  end_op();
+  return 0;
+
+bad:
+  ip->nlink = 0;
+  iupdate(ip);
+  iunlockput(ip);
+  end_op();
+  return -1;  
 }

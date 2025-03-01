@@ -47,12 +47,13 @@ void            iunlock(struct inode*);
 void            iunlockput(struct inode*);
 void            iupdate(struct inode*);
 int             namecmp(const char*, const char*);
-struct inode*   namei(char*);
-struct inode*   nameiparent(char*, char*);
+struct inode*   namei(char*, struct inode*);
+struct inode*   nameiparent(char*, char*, struct inode*);
 int             readi(struct inode*, int, uint64, uint, uint);
 void            stati(struct inode*, struct stat*);
 int             writei(struct inode*, int, uint64, uint, uint);
 void            itrunc(struct inode*);
+struct inode*   ifollow(struct inode*);
 
 // ramdisk.c
 void            ramdiskinit(void);

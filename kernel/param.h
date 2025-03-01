@@ -1,3 +1,7 @@
+#ifndef LAB_FS
+#define LAB_FS
+#endif
+
 #ifdef LAB_FS
 #define NPROC        10  // maximum number of processes
 #else
@@ -15,6 +19,7 @@
 #define NBUF         (MAXOPBLOCKS*3)  // size of disk block cache
 #ifdef LAB_FS
 #define FSSIZE       200000  // size of file system in blocks
+#define MAX_SLINK_DEEP  16  // max symbolic link deep
 #else
 #ifdef LAB_LOCK
 #define FSSIZE       10000  // size of file system in blocks
