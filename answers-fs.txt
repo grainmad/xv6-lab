@@ -122,5 +122,119 @@ bmap(struct inode *ip, uint bn)
 期间错误处理比较麻烦，比如在创建inode后写入失败，或链接失败都需要销毁这个indoe。
 另外indoe必须要上锁才能读取到最新内容。
 
+``` c
+
+uint64
+sys_symlink(void)
+{
+  char name[MAXPATH], new[MAXPATH], old[MAXPATH];
+  struct inode *ip, *dp;
+  
+  if(argstr(0, old, MAXPATH) < 0 || argstr(1, new, MAXPATH) < 0)
+  return -1;
+  
+  /*
+    new是一个路径，old是一个路径，new末端是一个symlink，指向old的路径
+
+    找到new的父目录dp，末端的名字name，如果无法找到dp，返回-1
+    查看dp中是否已经存在name的文件，如果存在，返回-1
+    新建一个inode ip，类型为symlink，设置硬链接数为1, 写入old的路径
+    在dp的目录中加入文件name，指向ip->inum，失败 需要删除ip
+  */
+  
+  begin_op();
+  
+  if((dp = nameiparent(new, name, 0)) == 0) {
+    end_op();
+    return -1;
+  }
+
+  if((ip = dirlookup(dp, name, 0)) != 0){
+    iput(ip);
+    iput(dp);
+    end_op();
+    return -1;
+  }
+
+  if((ip = ialloc(dp->dev, T_SYMLINK)) == 0){
+    iput(dp);
+    end_op();
+    return -1;
+  }
+
+  ilock(ip);
+  ip->major = 0;
+  ip->minor = 0;
+  ip->nlink = 1;
+  iupdate(ip);
+
+  // 在这个inode上写入old路径
+  if (writei(ip, 0, (uint64)old, 0, strlen(old)) != strlen(old)) {
+    iput(dp);
+    goto bad; // ip已锁
+  }
+  
+  
+  // 链接
+  // printf("symlink old=%s new=%s\n", old, new);
+  // printf("symlink dp->inum=%d dp->type=%d, ip->inum=%d ip->type=%d\n", dp->inum, dp->type, ip->inum, ip->type);
+  ilock(dp);
+  if(dp->dev != ip->dev || dirlink(dp, name, ip->inum) < 0){
+    iunlockput(dp);
+    goto bad;
+  }
+
+  iunlockput(ip);
+  iunlockput(dp);
+  end_op();
+  return 0;
+
+bad:
+  ip->nlink = 0;
+  iupdate(ip);
+  iunlockput(ip);
+  end_op();
+  return -1;  
+}
+```
 对于打开软链接，实际上打开的是链接到的文件，通过路径寻找inode的过程中，如果存储的是相对路径，那么就要以当前软链接文件所在目录为起点，绝对路径就以根目录为起点
 
+``` c
+
+// 传入lock的ip，找到并返回ip的链接目标(也是lock的），目标前的经过的inode全部put 
+struct inode* 
+ifollow(struct inode *ip) {
+  // printf("ifollow ip->inum=%d\n", ip->inum);
+  struct inode *next;
+  
+  char path[MAXPATH];
+  int i;
+  for (i=0; i<MAX_SLINK_DEEP; i++) {
+    // ip 已经锁了
+    memset(path, 0, MAXPATH);
+    readi(ip, 0, (uint64)path, 0, MAXPATH);
+    // printf("ip->inum=%d link=%s\n", ip->inum, path);
+    if (path[0] == '\0') {
+      iunlockput(ip);
+      return 0;
+    }
+    iunlock(ip); //解锁
+    next = namei(path, ip);
+    iput(ip); // 放下ip的引用
+    if (next == 0) return 0;
+    ilock(next); // 只有锁了才能读到内容
+    // printf("next->inum=%d, next->type=%d\n", next->inum, next->type);
+    if (next->type != T_SYMLINK) break;
+    ip = next;
+  }
+  if (i == MAX_SLINK_DEEP) { // ip解锁释放引用
+    iunlockput(ip);
+    return 0;
+  }
+  if (next->nlink == 0) {
+    iunlockput(next);
+    return 0;
+  }
+  return next;
+}
+```
