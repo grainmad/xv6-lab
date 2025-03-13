@@ -585,19 +585,31 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
 
 #ifdef LAB_PGTBL
 
+void
+getflag(int x,  char* a) {
+  if (x&PTE_R) a[0] = 'R';
+  if (x&PTE_W) a[1] = 'W';
+  if (x&PTE_X) a[2] = 'X';
+  if (x&PTE_U) a[3] = 'U';
+  if (x&PTE_V) a[4] = 'V';
+  if (x&PTE_S) a[5] = 'S';
+}
 
 void
 dfs(pagetable_t pagetable, uint64 va, int level)
 {
   if (level < 0) return ;
   // there are 2^9 = 512 PTEs in a page table.
-  for(int i = 0; i < 512; i++){
+  for(uint64 i = 0; i < 512; i++){
     pte_t pte = pagetable[i];
     if(pte & PTE_V) {
       // this PTE points to a lower-level page table.
       uint64 child = PTE2PA(pte);
       for (int j=0; j<=2-level; j++) printf(" ..");
-      printf("0x%16:0lx: pte 0x%16:0lx pa 0x%16:0lx\n", (uint64) va|(i<<(level*9+12)), (uint64) pte, (uint64) child);
+      // printf("0x%16:0lx: pte 0x%16:0lx pa 0x%16:0lx\n", (uint64) va|(i<<(level*9+12)), (uint64) pte, (uint64) child);
+      char flags[7] = "------";
+      getflag(PTE_FLAGS(pte), flags);
+      printf("%p: pte %p flg %s pa %p\n", (void*) (va|(i<<(level*9+12))), (void*) pte, flags, (void*) child);
       dfs((pagetable_t)child, va|(i<<(level*9+12)), level-1);
     }
   }
