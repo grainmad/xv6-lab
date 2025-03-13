@@ -5,6 +5,10 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
+#include "fcntl.h"
+#include "fs.h"
+#include "sleeplock.h"
+#include "file.h"
 
 struct spinlock tickslock;
 uint ticks;
@@ -27,6 +31,69 @@ void
 trapinithart(void)
 {
   w_stvec((uint64)kernelvec);
+}
+
+int 
+scause_mmap(struct proc *p) {
+  uint64 va = r_stval();
+  char *mem;
+  pte_t* pte;
+  int flags = PTE_U;
+  struct vma* mp, *aim = 0;
+  
+  // printf("fualt va %p\n", (void*)va);
+  if (va >= MAXVA) { // 超出虚拟内存地址
+    printf("out maxva\n");
+    goto err;
+    
+  }
+  
+  // 是否已经映射了，如果已经以映射了但是还是中断，是页面权限问题，比如写入只读页面
+  if((pte = walk(p->pagetable, va, 0)) && (*pte & PTE_V) && PTE_FLAGS(*pte) != PTE_V) {
+    // 存在物理页，那么直接kill进程
+    goto err;
+  }
+  
+  
+  // va是否是需要映射
+  for(mp=p->mmaps; mp < &p->mmaps[NOFILE]; mp++){
+    if (mp->valid && mp->addr <= va && va < mp->addr+mp->len) {
+      aim = mp;
+      break;
+    }
+  }
+  if (!aim)
+    goto err;
+      
+
+  if((mem = kalloc()) == 0) { // 内存不足
+    printf("out mem\n");
+    goto err;
+  }
+  memset(mem, 0, PGSIZE);
+  ilock(aim->fp->ip);
+  if (readi(aim->fp->ip, 0, (uint64)mem, aim->offset+(PGROUNDDOWN(va) - aim->addr), PGSIZE) == -1) { // 读取文件到物理页
+    printf("read failure\n");
+    kfree(mem);
+    goto err;
+  } 
+  iunlock(aim->fp->ip);
+  
+  //设置权限
+  if (aim->prot&PROT_EXEC) flags |= PTE_X;
+  if (aim->prot&PROT_READ) flags |= PTE_R;
+  if (aim->prot&PROT_WRITE) flags |= PTE_W;
+
+  // 映射
+  if(mappages(p->pagetable, PGROUNDDOWN(va), PGSIZE, (uint64)mem, flags) != 0){
+    printf("map failure");
+    kfree(mem);
+    goto err;
+  }
+
+  return 0;
+err:
+  return -1;
 }
 
 //
@@ -67,6 +134,16 @@ usertrap(void)
     syscall();
   } else if((which_dev = devintr()) != 0){
     // ok
+  } else if(r_scause() == 0xd || r_scause() == 0xf) { // 0xd 读未映射地址 0xf写未映射地址
+    // printf("solove page fault scause 0x%lx pid=%d\n", r_scause(), p->pid);
+    // printf("            sepc=0x%lx stval=0x%lx\n", r_sepc(), r_stval());
+  
+    if(scause_mmap(p) == -1) {
+      printf("usertrap(): page fault scause 0x%lx pid=%d\n", r_scause(), p->pid);
+      printf("            sepc=0x%lx stval=0x%lx\n", r_sepc(), r_stval());
+      setkilled(p);
+    }
+    
   } else {
     printf("usertrap(): unexpected scause 0x%lx pid=%d\n", r_scause(), p->pid);
     printf("            sepc=0x%lx stval=0x%lx\n", r_sepc(), r_stval());

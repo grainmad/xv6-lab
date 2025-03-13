@@ -503,3 +503,58 @@ sys_pipe(void)
   }
   return 0;
 }
+
+// void *mmap(void *addr, size_t len, int prot, int flags, int fd, off_t offset);
+uint64
+sys_mmap(void)
+{
+  uint64 addr = 0x1ffffff000; // 第一个参数无效。内核分配的最低虚拟的地址
+  size_t len;
+  int prot, flags, fd;
+  uint64 offset;
+  struct file* fp;
+
+  argaddr(1, &len);
+  argint(2, &prot);
+  argint(3, &flags);
+  if (argfd(4, &fd, &fp) == -1) return -1;
+  argaddr(5, &offset); 
+
+  struct proc *p = myproc();
+  if (flags&MAP_SHARED) {
+    if ((prot&PROT_READ) && fp->readable == 0) return -1;
+    if ((prot&PROT_WRITE) && fp->writable == 0) return -1;
+  }
+  // 分配vma结构：寻找一个未使用的vma，找到一个合适的地址（所有区间中最大右端点）
+  struct vma* mp, *aim = 0;
+  for(mp=p->mmaps; mp < &p->mmaps[NOFILE]; mp++){
+    if (mp->valid == 0) {
+      aim = mp;
+    } else if (mp->addr + mp->len > addr) {
+      addr = mp->addr + mp->len;
+    }
+  }
+  addr = PGROUNDUP(addr);
+  if (!aim) return -1; // vma耗尽
+  aim->valid = 1;
+  aim->addr = addr;
+  aim->len = len;
+  aim->prot = prot;
+  aim->flags = flags;
+  aim->offset = offset;
+  aim->fp = filedup(fp);
+  // printf("[mmap] alloc addr:%p\n", (void*) addr);
+  return addr;
+
+}
+// int munmap(void *addr, size_t len);
+uint64
+sys_munmap(void)
+{
+  uint64 addr;
+  size_t len;
+  
+  argaddr(0, &addr);
+  argaddr(1, &len);
+  return munmap_range(addr, addr+len); 
+}

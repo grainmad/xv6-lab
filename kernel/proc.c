@@ -308,6 +308,12 @@ fork(void)
       np->ofile[i] = filedup(p->ofile[i]);
   np->cwd = idup(p->cwd);
 
+  for(i = 0; i < NOFILE; i++)
+    if(p->mmaps[i].valid) {
+      np->mmaps[i] = p->mmaps[i];
+      filedup(np->mmaps[i].fp);
+    }
+
   safestrcpy(np->name, p->name, sizeof(p->name));
 
   pid = np->pid;
@@ -359,6 +365,12 @@ exit(int status)
       p->ofile[fd] = 0;
     }
   }
+  // printf("before\n");
+  // vmprint(p->pagetable);
+  // 取消映射所有文件
+  munmap_range(0, MAXVA);
+  // printf("after\n");
+  // vmprint(p->pagetable);
 
   begin_op();
   iput(p->cwd);

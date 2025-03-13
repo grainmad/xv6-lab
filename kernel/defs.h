@@ -1,6 +1,12 @@
+#ifndef LAB_MMAP
+#define LAB_MMAP
+#endif
+
 #ifdef LAB_MMAP
 typedef unsigned long size_t;
 typedef long int off_t;
+#define MAX(a, b) ((a) > (b) ? (a) : (b))
+#define MIN(a, b) ((a) < (b) ? (a) : (b))
 #endif
 struct buf;
 struct context;
@@ -37,6 +43,7 @@ void            fileinit(void);
 int             fileread(struct file*, uint64, int n);
 int             filestat(struct file*, uint64 addr);
 int             filewrite(struct file*, uint64, int n);
+int             munmap_range(uint64 lva, uint64 rva);
 
 // fs.c
 void            fsinit(int);
@@ -175,6 +182,7 @@ uint64          uvmdealloc(pagetable_t, uint64, uint64);
 int             uvmcopy(pagetable_t, pagetable_t, uint64);
 void            uvmfree(pagetable_t, uint64);
 void            uvmunmap(pagetable_t, uint64, uint64, int);
+void            uvmunmap_skp(pagetable_t, uint64, uint64, int);
 void            uvmclear(pagetable_t, uint64);
 pte_t *         walk(pagetable_t, uint64, int);
 uint64          walkaddr(pagetable_t, uint64);

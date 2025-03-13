@@ -1,0 +1,19 @@
+
+**RISC-V 异常代码表（部分）**
+| code                 | description                    |
+|----------------------|--------------------------------|
+| 0x0                  | Instruction Address Misaligned |
+| 0x1                  | Instruction Access Fault       |
+| 0x2                  | Illegal Instruction            |
+| 0x3                  | Breakpoint                     |
+| 0x4                  | Load Address Misaligned        |
+| 0x5                  | Load Access Fault              |
+| 0x6                  | Store/AMO Address Misaligned   |
+| 0x7                  | Store/AMO Access Fault         |
+| 0x8                  | Environment Call from U-mode   |
+| 0x9                  | Environment Call from S-mode   |
+| 0xb                  | Environment Call from M-mode   |
+| 0xc                  | Instruction Page Fault         |
+| 0xd                  | Load Page Fault                |
+| 0xf                  | Store/AMO Page Fault           |
+

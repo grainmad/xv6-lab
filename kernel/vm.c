@@ -198,6 +198,30 @@ uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
   }
 }
 
+void
+uvmunmap_skp(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
+{
+  uint64 a;
+  pte_t *pte;
+
+  if((va % PGSIZE) != 0)
+    panic("uvmunmap: not aligned");
+
+  for(a = va; a < va + npages*PGSIZE; a += PGSIZE){
+    if((pte = walk(pagetable, a, 0)) == 0)
+      continue;
+    if((*pte & PTE_V) == 0)
+      continue;
+    if(PTE_FLAGS(*pte) == PTE_V) // 仅含有PTE_V是页表
+      continue;
+    if(do_free){
+      uint64 pa = PTE2PA(*pte);
+      kfree((void*)pa);
+    }
+    *pte = 0;
+  }
+}
+
 // create an empty user page table.
 // returns 0 if out of memory.
 pagetable_t
@@ -448,4 +472,41 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
   } else {
     return -1;
   }
+}
+
+void
+getflag(uint x, char* a) {
+  int i = 0;
+  if (x&PTE_R) a[i++] = 'R';
+  if (x&PTE_W) a[i++] = 'W';
+  if (x&PTE_X) a[i++] = 'X';
+  if (x&PTE_U) a[i++] = 'U';
+  if (x&PTE_V) a[i++] = 'V';
+  a[i] = '\0';
+}
+
+void
+dfs(pagetable_t pagetable, uint64 va, int level)
+{
+  if (level < 0) return ;
+  // there are 2^9 = 512 PTEs in a page table.
+  for(uint64 i = 0; i < 512; i++){
+    pte_t pte = pagetable[i];
+    if(pte & PTE_V) {
+      // this PTE points to a lower-level page table.
+      uint64 child = PTE2PA(pte);
+      for (int j=0; j<=2-level; j++) printf(" ..");
+      char flags[10];
+      getflag(PTE_FLAGS(pte), flags);
+      printf("%p: pte %p flag %s pa %p\n", (void*) (va|(i<<(level*9+12))), (void*) pte, flags, (void*) child);
+      dfs((pagetable_t)child, va|(i<<(level*9+12)), level-1);
+    }
+  }
+}
+
+void
+vmprint(pagetable_t pagetable) {
+  // your code here
+  printf("page table %p\n", (void*) pagetable);
+  dfs(pagetable, 0, 2);
 }

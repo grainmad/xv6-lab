@@ -12,6 +12,7 @@
 #include "file.h"
 #include "stat.h"
 #include "proc.h"
+#include "fcntl.h"
 
 struct devsw devsw[NDEV];
 struct {
@@ -180,3 +181,104 @@ filewrite(struct file *f, uint64 addr, int n)
   return ret;
 }
 
+// inode原有大小不可变 offset+n <= ip->size
+// 存在虚拟地址没有挂载物理页，需要跳过该页
+int 
+munmap_write(struct inode *ip, uint64 addr, int offset, int n) 
+{
+  // printf("va:%p, off:%d, n:%d\n", (void*)addr, offset, n);
+  struct proc *p = myproc();
+  pte_t* pte;
+  int r;
+  int max = 2 * BSIZE; // 每次最多写两块
+  int i = 0;
+  while(i < n){
+    // 如果遇到未映射，跳过一页
+    if((pte = walk(p->pagetable, addr+i, 0)) == 0 || (*pte & PTE_V) == 0 || PTE_FLAGS(*pte) == PTE_V) {
+      offset += MIN(PGROUNDUP(i+1), n)-i;
+      i = MIN(PGROUNDUP(i+1), n);
+      continue;
+    }
+
+    int n1 = n - i;
+    if(n1 > max)
+      n1 = max;
+
+    begin_op();
+    ilock(ip);
+    if ((r = writei(ip, 1, addr + i, offset, n1))>0) {
+      // printf("r=%d, addr=%p n1=%d\n", r, (void*)(addr+i), n1);
+      offset += r;
+    }
+    iunlock(ip);
+    end_op();
+
+    if(r != n1){
+      // error from writei
+      break;
+    }
+    i += r;
+  }
+  // printf("i:%d, n:%d\n", i, n);
+  return (i == n ? n : -1);
+}
+
+int 
+munmap_range(uint64 lva, uint64 rva) {
+  uint64 l, r;
+  int sz;
+  struct proc *p = myproc();
+  struct vma* mp;
+  uint64 rt = -1;
+  for(mp=p->mmaps; mp < &p->mmaps[NOFILE]; mp++){
+    l = mp->addr, r = mp->addr+mp->len;
+    if (mp->valid == 0) continue;
+    if (l<lva && rva < r) continue; // 中间打孔不行
+    if (l<lva) l = lva;
+    if (rva<r) r = rva;
+    // printf("l:%p r:%p\n", (void*) l, (void*) r);
+    // printf("lva:%p rva:%p\n", (void*) lva, (void*) rva);
+    // printf("before munmap\n");
+    // printf("mp->addr:%p mp->addr+mp->len:%p mp->len:%p\n", (void*) mp->addr, (void*) mp->addr+mp->len, (void*) mp->len);
+    // printf("inode offset:%d size:%d\n", mp->offset, mp->fp->ip->size);
+
+    // [l,r) 实际需要unmap范围
+    // [mp->addr, mp->addr + mp->len) 已经map的范围
+    sz = 0;
+    if ((mp->flags&MAP_SHARED) && (mp->prot&PROT_WRITE)) { // 回写
+      ilock(mp->fp->ip);
+      if (mp->fp->ip->size >= mp->offset + (l-mp->addr)) {
+        sz = MIN(r-l, mp->fp->ip->size - (mp->offset + (l-mp->addr)));
+      }
+      iunlock(mp->fp->ip);
+      if (sz && munmap_write(mp->fp->ip, l, mp->offset+(l-mp->addr), sz) != sz) { // [0, mp->offset)是之前unmap的，当前如果需要unmap后半部分则需要再偏移
+        return -1;
+      }
+    }
+    
+    // 释放，sys_mmap确保了mp->addr是页对齐的，mp->addr+mp->len不一定。
+    if (l == mp->addr && mp->addr+mp->len == r) { // 完整删除
+      // printf("[munmap] 1 va:%p, npages:%ld\n", (void*) PGROUNDDOWN(l), (PGROUNDUP(r)-PGROUNDDOWN(l))/PGSIZE);
+      uvmunmap_skp(p->pagetable, PGROUNDDOWN(l), (PGROUNDUP(r)-PGROUNDDOWN(l))/PGSIZE, 1);
+      fileclose(mp->fp);
+      mp->valid = 0;
+    } else if (mp->addr<l) { // 删除后半部分，第一个页还有没有删除的
+      // printf("[munmap] 2 va:%p, npages:%ld\n", (void*) PGROUNDUP(l), (PGROUNDUP(r)-PGROUNDUP(l))/PGSIZE);
+      uvmunmap_skp(p->pagetable, PGROUNDUP(l), (PGROUNDUP(r)-PGROUNDUP(l))/PGSIZE, 1);
+    } else { // 删除前半部分，最后一页还有没有删除的
+      // printf("[munmap] 3 va:%p, npages:%ld\n", (void*) PGROUNDDOWN(l), (PGROUNDDOWN(r)-PGROUNDDOWN(l))/PGSIZE);
+      uvmunmap_skp(p->pagetable, PGROUNDDOWN(l), (PGROUNDDOWN(r)-PGROUNDDOWN(l))/PGSIZE, 1);
+    }
+    
+    if(lva <= mp->addr) { // 写前半部分，需要增加偏移
+      mp->offset += sz; 
+      mp->addr = r;
+    }
+    mp->len -= r-l;
+    // printf("after munmap\n");
+    // printf("mp->addr:%p mp->addr+mp->len:%p mp->len:%p\n", (void*) mp->addr, (void*) mp->addr+mp->len, (void*) mp->len);
+    // printf("inode offset:%d size:%d\n", mp->offset, mp->fp->ip->size);
+    rt = 0;
+  }
+  return rt;
+}
