@@ -19,6 +19,17 @@ static uint8 host_mac[ETHADDR_LEN] = { 0x52, 0x55, 0x0a, 0x00, 0x02, 0x02 };
 
 static struct spinlock netlock;
 
+
+#define NBPORT 20
+#define NPACKET 16
+static struct bport
+{
+  uint16 port;
+  char* buf[NPACKET];
+  int head, tail;
+} bport_list[NBPORT];
+
+
 void
 netinit(void)
 {
@@ -37,7 +48,28 @@ sys_bind(void)
   //
   // Your code here.
   //
-
+  int port;
+  argint(0, &port);
+  if (0<port && port<65536) {
+    acquire(&netlock);
+    struct bport* bp;
+    for (bp=bport_list; bp<&bport_list[NBPORT]; bp++) {
+      if (bp->port == port) {
+        release(&netlock);
+        return -1; // 已经绑定过
+      }
+    }
+    for (bp=bport_list; bp<&bport_list[NBPORT]; bp++) {
+      if (bp->port == 0) break;
+    }
+    if (bp == &bport_list[NBPORT]) {
+      release(&netlock);
+      return -1; // 端口绑定数目超过最大数
+    }
+    bp->port = port;
+    release(&netlock);
+    return 0;
+  }
   return -1;
 }
 
@@ -52,7 +84,21 @@ sys_unbind(void)
   //
   // Optional: Your code here.
   //
-
+  int port;
+  argint(0, &port);
+  acquire(&netlock);
+  struct bport* bp;
+  for (bp=bport_list; bp<&bport_list[NBPORT]; bp++) {
+    if (bp->port == port) {
+      // 释放未读取的数据包
+      bp->port = 0;
+      while (bp->head != bp->tail) {
+        kfree(bp->buf[bp->head]);
+        bp->head = (bp->head+1)%NPACKET;
+      }
+    }
+  }
+  release(&netlock);
   return 0;
 }
 
@@ -77,6 +123,65 @@ sys_recv(void)
   //
   // Your code here.
   //
+  struct proc *p = myproc();
+  int dport;
+  uint64 src;
+  uint64 sport;
+  uint64 buf;
+  int maxlen;
+
+  argint(0, &dport);
+  argaddr(1, &src);
+  argaddr(2, &sport);
+  argaddr(3, &buf);
+  argint(4, &maxlen);
+
+  acquire(&netlock);
+  struct bport* bp;
+  for (bp=bport_list; bp<&bport_list[NBPORT]; bp++) {
+    if (bp->port == dport) {
+      break;
+    }
+  }
+  if (bp == &bport_list[NBPORT]) {
+    goto err; // 此端口没有绑定
+  }
+  if (bp->tail == bp->head) {// 无数据 睡眠
+    // printf("queue [%d, %d] sleep pid %d\n", bp->head, bp->tail, myproc()->pid);
+    sleep(bp, &netlock);
+    if (killed(myproc())) goto err;
+  }
+  char* bf = bp->buf[bp->head];
+  
+  // 解析协议
+  struct eth *eth = (struct eth *) bf;
+  struct ip *ip = (struct ip *)(eth + 1);
+  struct udp *udp = (struct udp *)(ip + 1);
+  char *payload = (char *)(udp + 1);
+  int ksrc = htonl(ip->ip_src); // 大端转小端
+  short ksport = htons(udp->sport);
+  uint64 len = htons(udp->ulen) - sizeof(struct udp);
+  
+  // printf("[recv] src:%d sport:%d len:%ld payload:\n", ksrc, ksport, len);
+  // for (int i=0; i<len; i++) {
+  //   printf("%x\t", payload[i]);
+  // } 
+  // printf("\n");
+  
+  if (copyout(p->pagetable, src, (char*)&ksrc, 4)<0) goto err;
+  
+  if (copyout(p->pagetable, sport, (char*)&ksport, 2)<0) goto err;
+  
+  if (len > maxlen) len = maxlen;
+  if (copyout(p->pagetable, buf, payload, len)<0) goto err;
+  // printf("queue [%d,%d]==>[%d,%d]\n", bp->head, bp->tail, (bp->head+1)%NPACKET, bp->tail);
+  bp->head = (bp->head+1)%NPACKET;
+  kfree(bf);
+  release(&netlock);
+  return len;
+
+err:
+  release(&netlock);
   return -1;
 }
 
@@ -144,7 +249,34 @@ sys_send(void)
     return -1;
   }
   memset(buf, 0, PGSIZE);
-
+  /*
+    | eth                          | ip                                                                                                     | udp                                         |
+    | dhost(48) shost(48) type(16) | ip_vhl(8) ip_tos(8) ip_len(16) ip_id(16) ip_off(16) ip_ttl(8) ip_p(8) ip_sum(16) ip_src(32) ip_dst(32) | sport(16) dport(16) ulen(16) sum(16) payload|
+    
+    struct eth {
+      uint8  dhost[ETHADDR_LEN];
+      uint8  shost[ETHADDR_LEN];
+      uint16 type;
+    } 
+    struct ip {
+      uint8  ip_vhl; // version << 4 | header length >> 2
+      uint8  ip_tos; // type of service
+      uint16 ip_len; // total length, including this IP header
+      uint16 ip_id;  // identification
+      uint16 ip_off; // fragment offset field
+      uint8  ip_ttl; // time to live
+      uint8  ip_p;   // protocol
+      uint16 ip_sum; // checksum, covers just IP header
+      uint32 ip_src, ip_dst;
+    };
+    struct udp {
+      uint16 sport; // source port
+      uint16 dport; // destination port
+      uint16 ulen;  // length, including udp header, not including IP header
+      uint16 sum;   // checksum
+    };
+    payload
+  */
   struct eth *eth = (struct eth *) buf;
   memmove(eth->dhost, host_mac, ETHADDR_LEN);
   memmove(eth->shost, local_mac, ETHADDR_LEN);
@@ -191,7 +323,22 @@ ip_rx(char *buf, int len)
   //
   // Your code here.
   //
-  
+  struct eth *eth = (struct eth *) buf;
+  struct ip *ip = (struct ip *)(eth + 1);
+  struct udp *udp = (struct udp *)(ip + 1);
+  acquire(&netlock);
+  struct bport* bp;
+  for (bp=bport_list; bp<&bport_list[NBPORT]; bp++) {
+    if (bp->port == htons(udp->dport)) break;
+  }
+  if (ip->ip_p == IPPROTO_UDP && bp != &bport_list[NBPORT] && (bp->tail + 1)%NPACKET != bp->head) {
+    bp->buf[bp->tail] = buf;
+    bp->tail = (bp->tail + 1)%NPACKET;
+    wakeup(bp);
+  } else {
+    kfree(buf);
+  }
+  release(&netlock);
 }
 
 //
@@ -230,14 +377,14 @@ arp_rx(char *inbuf)
   arp->pro = htons(ETHTYPE_IP);
   arp->hln = ETHADDR_LEN;
   arp->pln = sizeof(uint32);
-  arp->op = htons(ARP_OP_REPLY);
+  arp->op = htons(ARP_OP_REPLY); // replies with the hw addr of the protocol addr
 
   memmove(arp->sha, local_mac, ETHADDR_LEN);
   arp->sip = htonl(local_ip);
   memmove(arp->tha, ineth->shost, ETHADDR_LEN);
   arp->tip = inarp->sip;
 
-  e1000_transmit(buf, sizeof(*eth) + sizeof(*arp));
+  e1000_transmit(buf, sizeof(*eth) + sizeof(*arp)); // 无论是谁发来的arp，都返回本机mac地址
 
   kfree(inbuf);
 }

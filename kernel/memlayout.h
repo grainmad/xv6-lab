@@ -25,6 +25,10 @@
 #define VIRTIO0 0x10001000
 #define VIRTIO0_IRQ 1
 
+#ifndef LAB_NET
+#define LAB_NET
+#endif
+
 #ifdef LAB_NET
 #define E1000_IRQ 33
 #endif
