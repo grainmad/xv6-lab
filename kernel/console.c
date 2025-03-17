@@ -139,7 +139,10 @@ consoleintr(int c)
 
   switch(c){
   case C('P'):  // Print process list.
+    cpudump();
     procdump();
+    kmemdump();
+    bcachedump();
     break;
   case C('U'):  // Kill line.
     while(cons.e != cons.w &&

@@ -1,3 +1,6 @@
+#ifndef LAB_LOCK
+#define LAB_LOCK
+#endif
 #ifdef LAB_MMAP
 typedef unsigned long size_t;
 typedef long int off_t;

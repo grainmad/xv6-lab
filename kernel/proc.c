@@ -681,7 +681,7 @@ procdump(void)
   struct proc *p;
   char *state;
 
-  printf("\n");
+  printf("\n==== process ====\n");
   for(p = proc; p < &proc[NPROC]; p++){
     if(p->state == UNUSED)
       continue;
@@ -689,7 +689,20 @@ procdump(void)
       state = states[p->state];
     else
       state = "???";
-    printf("%d %s %s", p->pid, state, p->name);
+    printf("pid:%d status:%s name:%s", p->pid, state, p->name);
     printf("\n");
+  }
+}
+
+void
+cpudump(void)
+{
+  printf("\n==== cpu ====\n");
+  printf("current cpu: %d\n", cpuid());
+  for (int i=0; i<NCPU; i++) {
+    struct cpu *c = &cpus[i];
+    if (c->proc != 0) {
+      printf("cpu:%d pid:%d\n", i, c->proc->pid);
+    }
   }
 }

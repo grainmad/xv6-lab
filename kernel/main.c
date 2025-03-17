@@ -1,3 +1,7 @@
+#ifndef LAB_LOCK
+#define LAB_LOCK
+#endif
+
 #include "types.h"
 #include "param.h"
 #include "memlayout.h"
