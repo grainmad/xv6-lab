@@ -26,14 +26,35 @@
 // only one device
 struct superblock sb; 
 
+#define SEGMENT_TREE
+
+#ifdef SEGMENT_TREE
+char *sg; // 线段树
+struct spinlock sglock; // 并发保护
+struct bmcache {
+  int changed;
+  int blockno;
+  uchar data[BSIZE];
+};
+struct bmcache* bmc; 
+int bmsz;
+// 线段树节点i的bit值
+#define SG(i) ((sg[(i)/8]>>((i)%8))&1) 
+// 线段树节点i的bit值设置为1
+#define SG1(i) (sg[(i)/8] |= 0x1<<((i)%8))
+// 线段树节点i的bit值设置为0
+#define SG0(i) (sg[(i)/8] &= ~(0x1<<((i)%8)))
+#endif
+
 // Read the super block.
 static void
 readsb(int dev, struct superblock *sb)
 {
   struct buf *bp;
-
+  
   bp = bread(dev, 1);
   memmove(sb, bp->data, sizeof(*sb));
+  brelse(bp);
   // uint magic;        // Must be FSMAGIC
   // uint size;         // Size of file system image (blocks)
   // uint nblocks;      // Number of data blocks
@@ -57,8 +78,74 @@ readsb(int dev, struct superblock *sb)
   printf("blocks\t\tboot\t\tsuper\t\tlog\t\tinodes\t\tbmap\t\tdata\n");
   printf("count\t\t1\t\t1\t\t%d\t\t%d\t\t%d\t\t%d\t\tsum=%d\n", sb->inodestart-sb->logstart, sb->bmapstart-sb->inodestart, (sb->size-sb->nblocks)-sb->bmapstart, sb->nblocks, sb->size);
   printf("start\t\t0\t\t1\t\t%d\t\t%d\t\t%d\t\t%d\t\tend=%d\n", sb->logstart, sb->inodestart, sb->bmapstart, sb->size-sb->nblocks, sb->size);
-  brelse(bp);
 }
+
+#ifdef SEGMENT_TREE
+void build_segment_tree(int dev) {
+  initlock(&sglock, "sglock");
+  /*
+    线段树优化盘块分配，找到第一个空闲的盘块
+    盘块作为叶子，构建完全二叉树
+    n个叶子，将n扩充到2的幂次m
+    那么需要2m个bit
+    树根节点编号为1，对于节点为i的儿子节点为2i和2i+1
+    有效叶子范围[m,m+n)，叶子节点为i，则盘块号i-m
+    寻找与释放空闲的盘块效率均为O(logn)
+  */ 
+  // 确定内存数量
+  int n = sb.size;
+  int m = 1;
+  while (m<n) m<<=1;
+  int npg = PGROUNDUP(2*m/8)/PGSIZE; // 需要内存页数
+  printf(">>>segment tree need memory pages: %d\n", npg);
+  // 申请内存
+  
+  while(npg--) { // 内存初始化后，初始分配的内存是连续的
+    sg = (char*) kalloc();
+    if (sg == 0) {
+      panic("segment tree kalloc");
+    }
+    memset(sg, 0, PGSIZE);
+  }
+  // bmaps 存储置所需的内存
+  bmsz = (sb.size-sb.nblocks)-sb.bmapstart;
+  npg =  PGROUNDUP(sizeof(struct bmcache)*bmsz)/PGSIZE;
+  printf(">>>bmaps cache need memory pages: %d\n", npg);
+  while (npg--) {
+    bmc = (struct bmcache *) kalloc();
+    if (bmc == 0) {
+      panic("bmc kalloc");
+    }
+    memset(bmc, 0, PGSIZE);
+  }
+  struct bmcache *tmp = bmc;
+  struct buf *bp;
+  // 读取bmaps盘块，加载到内存
+  for (int i=m, bm=sb.bmapstart; i<m+n; bm++, tmp++) {
+    // 读取bmap盘块
+    bp = bread(dev, bm);
+    tmp->blockno = bm;
+    tmp->changed = 0;
+    memmove(tmp->data, bp->data, BSIZE);
+    // 写入8*1024个bit
+    for (int j=0; j<BPB && i<m+n; j++,i++) {
+      if (bp->data[j/8] & (1<<(j%8))) { // 第j个bit为1
+        // printf("bp %d, bit %d, sgnode %d\n", bm, j, i);
+        SG1(i);
+      }
+    }
+    brelse(bp);
+  }
+  // 构建线段树
+  for (int i=m-1; i>0; i--) {
+    if (SG(i<<1)&SG(i<<1|1)) { // 左右儿子均为1
+      SG1(i);
+    } else {
+      SG0(i);
+    }
+  }
+}
+#endif
 
 // Init fs
 void
@@ -66,6 +153,9 @@ fsinit(int dev) {
   readsb(dev, &sb);
   if(sb.magic != FSMAGIC)
     panic("invalid file system");
+#ifdef SEGMENT_TREE
+  build_segment_tree(dev); // initlog 可能会写盘块，先构建线段树
+#endif
   initlog(dev, &sb);
 }
 
@@ -80,7 +170,7 @@ bzero(int dev, int bno)
   log_write(bp);
   brelse(bp);
 }
-
+#ifndef SEGMENT_TREE
 // Blocks.
 
 // Allocate a zeroed disk block.
@@ -110,6 +200,7 @@ balloc(uint dev)
   return 0;
 }
 
+
 // Free a disk block.
 static void
 bfree(int dev, uint b)
@@ -126,7 +217,107 @@ bfree(int dev, uint b)
   log_write(bp);
   brelse(bp);
 }
+#else
+static uint
+balloc(uint dev)
+{
+  int n = sb.size, m = 1;
+  while (m<n) m<<=1;
+  int u = 1;
+  acquire(&sglock);
+  if (SG(u)) {
+    release(&sglock);
+    goto bad;
+  }
+  while (u<m) {
+    // printf("ls %d=%d, rs %d=%d\n", u<<1, SG(u<<1), u<<1|1, SG(u<<1|1));
+    if (SG(u<<1)) {
+      u = u<<1|1;
+    } else {
+      u = u<<1;
+    }
+  }
+  if (u>=m+n) {
+    release(&sglock);
+    goto bad;
+  }
+  // SG(1) == 0 存在空闲盘块，u<m+n 合法盘块号b=u-m
+  int b = u-m;
+  // printf(">>> balloc: u=%d b=%d\n", u, b);
+  // 更新线段树
+  SG1(u); // 设置线段树节点i的bit值为1
+  while (u>1) {
+    u>>=1;
+    if (SG(u<<1)&SG(u<<1|1)) { // 左右儿子均为1
+      SG1(u);
+    } else {
+      SG0(u);
+    }
+    // printf("ls %d=%d, rs %d=%d u %d=%d\n", u<<1, SG(u<<1), u<<1|1, SG(u<<1|1), u, SG(u));
+  }
 
+  for (int i=0; i<bmsz; i++) {
+    if (bmc[i].blockno == BBLOCK(b, sb)) {
+      bmc[i].changed = 1;
+      bmc[i].data[b%BPB/8] |= 1<<(b%8);  // Mark block in use.
+      break;
+    }
+  }
+  release(&sglock);
+  bzero(dev, b);
+  return b;
+bad:
+  printf("balloc: out of blocks\n");
+  return 0;
+}
+
+static void
+bfree(int dev, uint b)
+{
+  int bi, m;
+  bi = b % BPB;
+  m = 1 << (bi % 8);
+  acquire(&sglock);
+  for (int i=0; i<bmsz; i++) {
+    if (bmc[i].blockno == BBLOCK(b, sb)) {
+      if((bmc->data[bi/8] & m) == 0)
+        panic("freeing free block");
+      bmc[i].changed = 1;
+      bmc[i].data[bi/8] |= ~m;  // Mark block in use.
+      break;
+    }
+  }
+  
+  // 更新线段树
+  m = 1;
+  while (m<sb.size) m<<=1;
+  int u = b+m;
+  // printf(">>> bfree: u=%d b=%d\n", u, b);
+  while (u) {
+    SG0(u);
+    u>>=1;
+  }
+  release(&sglock);
+}
+
+static void
+bmupdate(int dev)
+{
+  struct buf *bp;
+  for (int i=0; i<bmsz; i++) {
+    if (bmc[i].changed) {
+      bp = bread(dev, bmc[i].blockno);
+      acquire(&sglock);
+      bmc[i].changed = 0;
+      memmove(bp->data, bmc[i].data, BSIZE);
+      release(&sglock);
+      log_write(bp);
+      brelse(bp);
+      // printf(">>> bmupdate: %d\n", bmc[i].blockno);
+    }
+  }
+}
+#endif
 // Inodes.
 //
 // An inode describes a single unnamed file.
@@ -415,6 +606,9 @@ bmap(struct inode *ip, uint bn)
         return 0;
       ip->addrs[bn] = addr;
     }
+#ifdef SEGMENT_TREE
+    bmupdate(ip->dev);
+#endif
     return addr;
   }
   bn -= NDIRECT;
@@ -437,6 +631,9 @@ bmap(struct inode *ip, uint bn)
       }
     }
     brelse(bp);
+#ifdef SEGMENT_TREE
+    bmupdate(ip->dev);
+#endif
     return addr;
   }
 
@@ -470,7 +667,9 @@ itrunc(struct inode *ip)
     bfree(ip->dev, ip->addrs[NDIRECT]);
     ip->addrs[NDIRECT] = 0;
   }
-
+#ifdef SEGMENT_TREE
+  bmupdate(ip->dev);
+#endif
   ip->size = 0;
   iupdate(ip);
 }
